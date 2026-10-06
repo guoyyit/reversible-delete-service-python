@@ -218,10 +218,13 @@ class ResourceService:
     def children(
         self, parent_id: str, *, include_deleted: bool = False
     ) -> list[Resource]:
-        parent = self.get(parent_id, include_deleted=include_deleted)
-        if parent.deleted_at is not None and not include_deleted:
-            raise NotFoundError(f"resource {parent_id!r} not found")
-        return self.list(parent_id=parent_id, include_deleted=include_deleted)
+        # One lock hold => the parent check and the child list are a
+        # single coherent snapshot, never a mix of two points in time.
+        with self._db.lock:
+            parent = self.get(parent_id, include_deleted=include_deleted)
+            if parent.deleted_at is not None and not include_deleted:
+                raise NotFoundError(f"resource {parent_id!r} not found")
+            return self.list(parent_id=parent_id, include_deleted=include_deleted)
 
     def count(self, *, include_deleted: bool = False) -> int:
         sql = "SELECT COUNT(*) AS c FROM resources"

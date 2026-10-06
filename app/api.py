@@ -63,10 +63,6 @@ def get_caller(
     return Caller(user_id=x_user_id, role=x_user_role)
 
 
-def get_service() -> ResourceService:
-    raise NotImplementedError  # 由 create_app 覆盖
-
-
 # ---------- 应用工厂 ----------
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -98,8 +94,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     pass  # 下一轮重试，回收本身幂等
 
         threading.Thread(target=_recycle_loop, daemon=True).start()
-
-    svc = lambda: service  # noqa: E731
 
     @app.post("/resources", status_code=201)
     def create_resource(req: CreateResourceRequest, caller: Caller = Depends(get_caller)):

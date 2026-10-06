@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS resources (
@@ -39,8 +41,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 class Database:
     """Single-connection SQLite store guarded by an RLock.
 
-    All state transitions happen inside transactions so a resource is
-    always observed in exactly one state (deleted or not).
+    All multi-row state transitions run inside one transaction, so any
+    concurrent reader observes each resource in exactly one state
+    (deleted or not deleted) -- never a field-level mix.
     """
 
     def __init__(self, path: str = ":memory:"):
@@ -50,6 +53,31 @@ class Database:
         self._lock = threading.RLock()
         with self._conn:
             self._conn.executescript(SCHEMA)
+
+    @property
+    def lock(self) -> threading.RLock:
+        return self._lock
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Exclusive, atomic unit of work. Rolls back on any exception."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                yield self._conn
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+
+    def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def query_one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
 
     def close(self) -> None:
         with self._lock:

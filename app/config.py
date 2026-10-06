@@ -14,6 +14,7 @@ class Settings:
     retention_seconds: int = DEFAULT_RETENTION_SECONDS
     admin_users: frozenset[str] = field(default_factory=frozenset)
     recycle_batch_size: int = 100
+    recycle_interval_seconds: int = 0  # 0 = background recycler disabled
 
     @staticmethod
     def from_env() -> "Settings":
@@ -29,4 +30,7 @@ class Settings:
             ),
             admin_users=frozenset(admins),
             recycle_batch_size=int(os.environ.get("RDS_RECYCLE_BATCH_SIZE", "100")),
+            recycle_interval_seconds=int(
+                os.environ.get("RDS_RECYCLE_INTERVAL_SECONDS", "0")
+            ),
         )

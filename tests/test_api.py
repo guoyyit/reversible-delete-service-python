@@ -134,3 +134,28 @@ def test_restart_recovers_deleted_state(tmp_path):
     resp = client2.post(f"/resources/{gone['id']}/restore", headers=h)
     assert resp.status_code == 200
     assert client2.get("/stats").json()["count"] == 2
+
+
+def test_background_recycler_purges_expired(tmp_path):
+    """RDS_RECYCLE_INTERVAL_SECONDS > 0 starts a background recycle loop."""
+    import time
+
+    settings = Settings(
+        admin_users=frozenset({"admin"}),
+        retention_seconds=0,  # everything deleted is immediately expired
+        recycle_interval_seconds=1,
+    )
+    with TestClient(create_app(settings)) as client:
+        h = {"X-User-Id": "alice"}
+        r = client.post("/resources", json={"name": "r"}, headers=h).json()
+        client.delete(f"/resources/{r['id']}", headers=h)
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            gone = client.get(
+                "/stats", params={"include_deleted": True}
+            ).json()["count"] == 0
+            if gone:
+                break
+            time.sleep(0.1)
+        assert gone, "background recycler did not purge the expired resource"

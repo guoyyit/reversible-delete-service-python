@@ -9,6 +9,7 @@ contract (same verb/path, 200 response).
 from __future__ import annotations
 
 import threading
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -40,7 +41,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     db = Database(settings.db_path)
     service = ResourceService(db, settings)
 
-    app = FastAPI(title="reversible-delete-service")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # optional background recycler (config-driven)
+        stop = threading.Event()
+        thread: threading.Thread | None = None
+        interval = settings.recycle_interval_seconds
+        if interval > 0:
+            def loop() -> None:
+                system = Caller(user_id="system", is_admin=True)
+                while not stop.wait(interval):
+                    try:
+                        service.recycle_expired(system)
+                    except Exception:  # keep the loop alive; next pass retries
+                        pass
+
+            thread = threading.Thread(target=loop, name="recycler", daemon=True)
+            thread.start()
+        yield
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=2)
+        db.close()
+
+    app = FastAPI(title="reversible-delete-service", lifespan=lifespan)
     app.state.settings = settings
     app.state.db = db
     app.state.service = service
@@ -140,33 +164,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/recycle")
     def recycle(caller: Caller = Depends(caller_dep)):
         return service.recycle_expired(caller)
-
-    # -- background recycler (optional, config-driven) ------------------------
-    @app.on_event("startup")
-    def start_background_recycler() -> None:
-        interval = settings.recycle_interval_seconds
-        if interval <= 0:
-            return
-        stop = threading.Event()
-        app.state.recycler_stop = stop
-
-        def loop() -> None:
-            system = Caller(user_id="system", is_admin=True)
-            while not stop.wait(interval):
-                try:
-                    service.recycle_expired(system)
-                except Exception:  # keep the loop alive; next pass retries
-                    pass
-
-        thread = threading.Thread(target=loop, name="recycler", daemon=True)
-        thread.start()
-        app.state.recycler_thread = thread
-
-    @app.on_event("shutdown")
-    def stop_background_recycler() -> None:
-        stop = getattr(app.state, "recycler_stop", None)
-        if stop is not None:
-            stop.set()
 
     return app
 

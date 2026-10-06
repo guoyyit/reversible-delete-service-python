@@ -1,8 +1,5 @@
-from fastapi import FastAPI
+"""Entry point kept for `uvicorn main:app` compatibility."""
 
-app = FastAPI()
+from app.main import app, create_app
 
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+__all__ = ["app", "create_app"]

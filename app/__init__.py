@@ -1,0 +1,1 @@
+"""Reversible-delete resource service."""

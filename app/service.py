@@ -309,9 +309,24 @@ class ResourceService:
                 code="cascade_member",
             )
 
-        with self._db.transaction() as conn:
-            self._restore_in_tx(conn, caller, row)
-            return _row_to_resource(self._get_row(conn, resource_id))
+        try:
+            with self._db.transaction() as conn:
+                self._restore_in_tx(conn, caller, row)
+                return _row_to_resource(self._get_row(conn, resource_id))
+        except ConflictError as exc:
+            if exc.code == "name_conflict":
+                # the mutating transaction rolled back; persist the audit
+                # trail of the conflict in a fresh transaction
+                with self._db.transaction() as conn:
+                    audit.record(
+                        conn,
+                        ts=_iso(_utcnow()),
+                        actor=caller.user_id,
+                        action=audit.ACTION_RESTORE_CONFLICT,
+                        resource_id=resource_id,
+                        detail=str(exc),
+                    )
+            raise
 
     def _restore_in_tx(
         self, conn: sqlite3.Connection, caller: Caller, row: sqlite3.Row
@@ -340,17 +355,6 @@ class ResourceService:
                 (m["parent_id"], m["name"], *member_ids),
             ).fetchone()
             if clash is not None:
-                audit.record(
-                    conn,
-                    ts=now,
-                    actor=caller.user_id,
-                    action=audit.ACTION_RESTORE_CONFLICT,
-                    resource_id=resource_id,
-                    detail=(
-                        f"member {m['id']} name {m['name']!r} conflicts"
-                        f" with live resource {clash['id']}"
-                    ),
-                )
                 raise ConflictError(
                     f"name {m['name']!r} already exists under the same parent",
                     code="name_conflict",
@@ -468,6 +472,17 @@ class ResourceService:
                         if row["deleted_at"] is not None:
                             self._restore_in_tx(conn, caller, row)
         except Exception as exc:
+            if isinstance(exc, ConflictError) and exc.code == "name_conflict":
+                # batch rolled back; persist the conflict audit separately
+                with self._db.transaction() as conn:
+                    audit.record(
+                        conn,
+                        ts=_iso(_utcnow()),
+                        actor=caller.user_id,
+                        action=audit.ACTION_RESTORE_CONFLICT,
+                        resource_id=None,
+                        detail=f"batch {op} rolled back: {exc}",
+                    )
             raise BatchConflictError(
                 {
                     "atomic": True,
@@ -496,6 +511,16 @@ class ResourceService:
             raise ConflictError(
                 "resource was deleted as part of a cascade",
                 code="cascade_member",
+            )
+        clash = self._db.query_one(
+            "SELECT id FROM resources WHERE deleted_at IS NULL"
+            " AND COALESCE(parent_id, '') = COALESCE(?, '') AND name = ?",
+            (row["parent_id"], row["name"]),
+        )
+        if clash is not None:
+            raise ConflictError(
+                f"name {row['name']!r} already exists under the same parent",
+                code="name_conflict",
             )
 
     # ------------------------------------------------------------------
